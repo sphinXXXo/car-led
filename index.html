@@ -50,6 +50,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <div class="card">
   <div id="devices"><div class="muted">Нет подключённых модулей. Закройте приложение LED LAMP и нажмите «Добавить» для каждой зоны.</div></div>
   <button class="primary" id="add" style="margin-top:12px">+ Добавить модуль</button>
+  <div id="status" class="muted" style="margin-top:10px;min-height:1em"></div>
 </div>
 
 <div class="card">
@@ -65,7 +66,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <input type="range" id="bright" min="1" max="100" value="100">
 </div>
 
-<details class="card"><summary class="muted">Журнал / диагностика</summary><div id="log"></div></details>
+<details class="card" id="logbox"><summary class="muted">Журнал / диагностика</summary><div id="log"></div></details>
 
 <script>
 // Known protocols of cheap BLE LED controllers
@@ -122,23 +123,44 @@ async function connect(d){
         log(' ', s.uuid, '→', chs.map(c=>c.uuid.slice(4,8)+(c.properties.write||c.properties.writeWithoutResponse?'(w)':'')).join(' '));
       }
       log('⚠ Неизвестный протокол — пришлите этот журнал');
-    } else log('Протокол:', d.proto.name);
+      status('Подключено, но протокол неизвестен. Откройте «Журнал» внизу и пришлите его текст.',true);
+    } else { log('Протокол:', d.proto.name); status('Подключено: '+(d.device.name||'модуль')); }
     d.connected = true; render();
     if(d.proto) await applyTo(d);
-  }catch(e){ log('Ошибка:', e.message); d.connected=false; render(); }
+  }catch(e){ status('Не удалось подключиться к '+(d.device.name||'модулю')+': '+e.message,true); d.connected=false; render(); }
 }
 
+const status = (t,err)=>{ const el=$('#status'); el.textContent=t; el.style.color=err?'#ff7a7a':''; if(t) log(t); };
+const NAME_PREFIXES=['ELK','BLEDOM','MELK','LEDBLE','LED','QHM','Triones','Dream','BJ_','SP','HM','Lamp','ZENGGE','LEDnet','duoCo','Lotus'];
 async function addDevice(){
+  if(!navigator.bluetooth){ status('Bluetooth недоступен в этом браузере. Откройте страницу в Bluefy.',true); alert('Bluetooth недоступен в этом браузере. Откройте страницу в Bluefy.'); return; }
+  status('Открываю список устройств…');
   try{
-    const device = await navigator.bluetooth.requestDevice({
-      acceptAllDevices:true,
-      optionalServices: PROTOCOLS.map(p=>p.service)
-    });
+    if(navigator.bluetooth.getAvailability && !(await navigator.bluetooth.getAvailability())){
+      status('Bluetooth выключен или у Bluefy нет к нему доступа (Настройки iPhone → Bluefy → Bluetooth).',true); return; }
+  }catch(e){}
+  const optionalServices = PROTOCOLS.map(p=>p.service);
+  try{
+    let device;
+    try{
+      device = await navigator.bluetooth.requestDevice({ acceptAllDevices:true, optionalServices });
+    }catch(e){
+      if(e.name==='NotFoundError' && /cancel/i.test(e.message)) throw e; // user cancelled
+      if(e.name==='NotFoundError' || e.name==='SecurityError') throw e;
+      log('acceptAllDevices не сработал:', e.name, e.message, '— пробую по фильтрам');
+      device = await navigator.bluetooth.requestDevice({
+        filters:[...PROTOCOLS.map(p=>({services:[p.service]})), ...NAME_PREFIXES.map(n=>({namePrefix:n}))],
+        optionalServices });
+    }
+    status('');
     if(devices.some(d=>d.device.id===device.id)) return;
     const d={device,connected:false}; devices.push(d);
     device.addEventListener('gattserverdisconnected',()=>{ d.connected=false; render(); log('Отключено:',device.name); });
     render(); await connect(d);
-  }catch(e){ log(e.message); }
+  }catch(e){
+    if(e.name==='NotFoundError') status('Устройство не выбрано. Если списка не было или он пустой — закройте LED LAMP и проверьте, что подсветка включена.',true);
+    else status('Ошибка: '+e.name+' — '+e.message,true);
+  }
 }
 
 // serialize writes per device
@@ -228,6 +250,9 @@ $('#add').onclick=addDevice;
 try{ const s=JSON.parse(localStorage.getItem('car-led')); if(s){Object.assign(state,s);
   $('#bright').value=s.bright; $('#bv').textContent=s.bright;} }catch(e){}
 drawWheel(); updateUI();
+window.addEventListener('error',e=>status('JS ошибка: '+e.message,true));
+window.addEventListener('unhandledrejection',e=>status('Ошибка: '+(e.reason&&e.reason.message||e.reason),true));
+log('Версия 3 · bluetooth='+(!!navigator.bluetooth)+' · '+navigator.userAgent);
 </script>
 </body>
 </html>

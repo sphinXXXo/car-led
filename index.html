@@ -112,7 +112,7 @@ async function connect(d){
     log('Сервисы:', services.map(s=>s.uuid.slice(4,8)).join(', '));
     for(const p of PROTOCOLS){
       try{
-        const s = await server.getPrimaryService(p.service);
+        const s = await server.getPrimaryService(uuid(p.service));
         d.ch = await s.getCharacteristic(p.char); d.proto = p; break;
       }catch(e){}
     }
@@ -127,40 +127,39 @@ async function connect(d){
     } else { log('Протокол:', d.proto.name); status('Подключено: '+(d.device.name||'модуль')); }
     d.connected = true; render();
     if(d.proto) await applyTo(d);
-  }catch(e){ status('Не удалось подключиться к '+(d.device.name||'модулю')+': '+e.message,true); d.connected=false; render(); }
+  }catch(e){ status('Не удалось подключиться к '+(d.device.name||'модулю')+': '+errText(e),true); d.connected=false; render(); }
 }
 
 const status = (t,err)=>{ const el=$('#status'); el.textContent=t; el.style.color=err?'#ff7a7a':''; if(t) log(t); };
 const NAME_PREFIXES=['ELK','BLEDOM','MELK','LEDBLE','LED','QHM','Triones','Dream','BJ_','SP','HM','Lamp','ZENGGE','LEDnet','duoCo','Lotus'];
-async function addDevice(){
-  if(!navigator.bluetooth){ status('Bluetooth недоступен в этом браузере. Откройте страницу в Bluefy.',true); alert('Bluetooth недоступен в этом браузере. Откройте страницу в Bluefy.'); return; }
+const uuid = n => '0000'+n.toString(16).padStart(4,'0')+'-0000-1000-8000-00805f9b34fb';
+const errText = e => e==null ? 'нет описания' : (e.name||e.message) ? (e.name||'')+' '+(e.message||'') : (typeof e==='object' ? JSON.stringify(e) : String(e));
+let searchMode = 0; // 0 = all devices, 1 = by name/service filters
+function addDevice(){
+  if(!navigator.bluetooth){ status('Bluetooth недоступен в этом браузере. Откройте страницу в Bluefy.',true); return; }
+  const optionalServices = PROTOCOLS.map(p=>uuid(p.service));
+  const opts = searchMode===0
+    ? { acceptAllDevices:true, optionalServices }
+    : { filters:[...PROTOCOLS.map(p=>({services:[uuid(p.service)]})), ...NAME_PREFIXES.map(n=>({namePrefix:n}))], optionalServices };
+  // requestDevice must be called synchronously inside the tap, no awaits before it
+  let req;
+  try{ req = navigator.bluetooth.requestDevice(opts); }catch(e){ req = Promise.reject(e); }
   status('Открываю список устройств…');
+  return req.then(onPicked, e=>{
+    log('requestDevice (режим '+searchMode+'):', errText(e));
+    if(e && e.name==='NotFoundError'){ status('Устройство не выбрано. Если в списке нет подсветки — закройте LED LAMP и включите подсветку.',true); return; }
+    searchMode = searchMode ? 0 : 1;
+    status('Ошибка: '+errText(e)+'. Нажмите «Добавить» ещё раз — попробую другой способ поиска.',true);
+  });
+}
+async function onPicked(device){
   try{
-    if(navigator.bluetooth.getAvailability && !(await navigator.bluetooth.getAvailability())){
-      status('Bluetooth выключен или у Bluefy нет к нему доступа (Настройки iPhone → Bluefy → Bluetooth).',true); return; }
-  }catch(e){}
-  const optionalServices = PROTOCOLS.map(p=>p.service);
-  try{
-    let device;
-    try{
-      device = await navigator.bluetooth.requestDevice({ acceptAllDevices:true, optionalServices });
-    }catch(e){
-      if(e.name==='NotFoundError' && /cancel/i.test(e.message)) throw e; // user cancelled
-      if(e.name==='NotFoundError' || e.name==='SecurityError') throw e;
-      log('acceptAllDevices не сработал:', e.name, e.message, '— пробую по фильтрам');
-      device = await navigator.bluetooth.requestDevice({
-        filters:[...PROTOCOLS.map(p=>({services:[p.service]})), ...NAME_PREFIXES.map(n=>({namePrefix:n}))],
-        optionalServices });
-    }
     status('');
     if(devices.some(d=>d.device.id===device.id)) return;
     const d={device,connected:false}; devices.push(d);
     device.addEventListener('gattserverdisconnected',()=>{ d.connected=false; render(); log('Отключено:',device.name); });
     render(); await connect(d);
-  }catch(e){
-    if(e.name==='NotFoundError') status('Устройство не выбрано. Если списка не было или он пустой — закройте LED LAMP и проверьте, что подсветка включена.',true);
-    else status('Ошибка: '+e.name+' — '+e.message,true);
-  }
+  }catch(e){ status('Ошибка: '+errText(e),true); }
 }
 
 // serialize writes per device
@@ -251,8 +250,8 @@ try{ const s=JSON.parse(localStorage.getItem('car-led')); if(s){Object.assign(st
   $('#bright').value=s.bright; $('#bv').textContent=s.bright;} }catch(e){}
 drawWheel(); updateUI();
 window.addEventListener('error',e=>status('JS ошибка: '+e.message,true));
-window.addEventListener('unhandledrejection',e=>status('Ошибка: '+(e.reason&&e.reason.message||e.reason),true));
-log('Версия 3 · bluetooth='+(!!navigator.bluetooth)+' · '+navigator.userAgent);
+window.addEventListener('unhandledrejection',e=>status('Ошибка: '+errText(e.reason),true));
+log('Версия 4 · bluetooth='+(!!navigator.bluetooth)+' · '+navigator.userAgent);
 </script>
 </body>
 </html>

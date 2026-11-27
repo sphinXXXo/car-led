@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Подсветка</title>
+<style>
+:root{--bg:#0e0f12;--card:#1a1c21;--text:#eceef2;--muted:#8a90a0;--accent:#ff3b6b;--ok:#3ddc84}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 -apple-system,system-ui,sans-serif;padding:16px;padding-bottom:40px;max-width:520px;margin:auto}
+h1{font-size:22px;margin:4px 0 16px}
+.card{background:var(--card);border-radius:16px;padding:16px;margin-bottom:14px}
+button{font:inherit;border:0;border-radius:12px;padding:12px 14px;background:#2a2d35;color:var(--text);cursor:pointer}
+button.primary{background:var(--accent);color:#fff;width:100%;font-weight:600}
+.row{display:flex;gap:10px;align-items:center}
+.row>*{flex:1}
+.wheel-wrap{position:relative;width:100%;max-width:340px;aspect-ratio:1;margin:4px auto 0;touch-action:none}
+#wheel{width:100%;height:100%;border-radius:50%;display:block;box-shadow:0 0 60px -10px var(--cur,#ff0040)}
+#knob{position:absolute;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 8px #000a;pointer-events:none}
+.center{position:absolute;inset:38%;border-radius:50%;background:var(--card);display:flex;align-items:center;justify-content:center;flex-direction:column;pointer-events:none}
+.center .chip{width:56%;aspect-ratio:1;border-radius:50%;background:var(--cur);box-shadow:0 0 24px var(--cur)}
+.center .hex{font:600 13px ui-monospace,monospace;margin-top:6px;color:var(--muted)}
+.ch{display:flex;align-items:center;gap:10px;margin-top:10px}
+.ch b{width:14px;color:var(--muted);font-size:13px}
+.ch input[type=range]{-webkit-appearance:none;appearance:none;height:14px;border-radius:7px;flex:1}
+.ch input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 1px 6px #000a}
+.ch output{width:34px;text-align:right;font:13px ui-monospace,monospace;color:var(--muted)}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.swatches{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:12px}
+.swatches button{aspect-ratio:1;padding:0;border-radius:50%;border:2px solid #0000}
+.dev{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid #2a2d35}
+.dev:first-child{border-top:0}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+.dot.on{background:var(--ok)}
+.dev .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dev small{color:var(--muted)}
+.muted{color:var(--muted);font-size:14px}
+#log{font:12px ui-monospace,monospace;color:var(--muted);white-space:pre-wrap;max-height:200px;overflow:auto}
+.warn{background:#3a2a10;color:#ffd27a}
+</style>
+</head>
+<body>
+<h1>💡 Подсветка авто</h1>
+
+<div id="nobt" class="card warn" hidden>
+  Этот браузер не поддерживает Bluetooth. На iPhone откройте страницу в бесплатном браузере <b>Bluefy</b> (App Store).
+</div>
+
+<div class="card">
+  <div id="devices"><div class="muted">Нет подключённых модулей. Закройте приложение LED LAMP и нажмите «Добавить» для каждой зоны.</div></div>
+  <button class="primary" id="add" style="margin-top:12px">+ Добавить модуль</button>
+</div>
+
+<div class="card">
+  <div class="row" style="margin-bottom:12px">
+    <button id="on">Вкл</button><button id="off">Выкл</button>
+  </div>
+  <div class="wheel-wrap" id="ww"><canvas id="wheel"></canvas><div class="center"><div class="chip"></div><div class="hex" id="hex">#FF0040</div></div><div id="knob"></div></div>
+  <div class="ch"><b>R</b><input type="range" id="cr" min="0" max="255"><output id="or"></output></div>
+  <div class="ch"><b>G</b><input type="range" id="cg" min="0" max="255"><output id="og"></output></div>
+  <div class="ch"><b>B</b><input type="range" id="cb" min="0" max="255"><output id="ob"></output></div>
+  <div class="swatches" id="sw"></div>
+  <div style="margin-top:16px" class="muted">Яркость <span id="bv">100</span>%</div>
+  <input type="range" id="bright" min="1" max="100" value="100">
+</div>
+
+<details class="card"><summary class="muted">Журнал / диагностика</summary><div id="log"></div></details>
+
+<script>
+// Known protocols of cheap BLE LED controllers
+const PROTOCOLS = [
+  { id:'elk', name:'ELK-BLEDOM', service:0xfff0, char:0xfff3,
+    on:()=>[0x7e,0x00,0x04,0xf0,0x00,0x01,0xff,0x00,0xef],
+    off:()=>[0x7e,0x00,0x04,0x00,0x00,0x00,0xff,0x00,0xef],
+    color:(r,g,b)=>[0x7e,0x00,0x05,0x03,r,g,b,0x00,0xef],
+    bright:(p)=>[0x7e,0x00,0x01,p,0x00,0x00,0x00,0x00,0xef] },
+  { id:'triones', name:'Triones/HappyLighting', service:0xffd5, char:0xffd9,
+    on:()=>[0xcc,0x23,0x33], off:()=>[0xcc,0x24,0x33],
+    color:(r,g,b)=>[0x56,r,g,b,0x00,0xf0,0xaa], bright:null },
+  { id:'ffe0', name:'Generic FFE0', service:0xffe0, char:0xffe1,
+    on:()=>[0xcc,0x23,0x33], off:()=>[0xcc,0x24,0x33],
+    color:(r,g,b)=>[0x56,r,g,b,0x00,0xf0,0xaa], bright:null },
+];
+const devices = []; // {device, ch, proto, connected}
+const state = { r:255,g:0,b:64, bright:100 };
+const $ = s=>document.querySelector(s);
+const log = (...a)=>{ $('#log').textContent = a.join(' ')+'\n'+$('#log').textContent; console.log(...a); };
+
+if(!navigator.bluetooth){ $('#nobt').hidden=false; }
+
+function render(){
+  const el=$('#devices');
+  if(!devices.length){ return; }
+  el.innerHTML='';
+  devices.forEach((d,i)=>{
+    const row=document.createElement('div'); row.className='dev';
+    row.innerHTML=`<span class="dot ${d.connected?'on':''}"></span>
+      <span class="name">${d.device.name||'Без имени'}<br><small>${d.proto?d.proto.name:'протокол не найден'}</small></span>`;
+    const b=document.createElement('button'); b.textContent=d.connected?'✕':'↻';
+    b.onclick=()=> d.connected ? (d.device.gatt.disconnect()) : connect(d);
+    row.append(b); el.append(row);
+  });
+}
+
+async function connect(d){
+  try{
+    log('Подключение к', d.device.name);
+    const server = await d.device.gatt.connect();
+    const services = await server.getPrimaryServices();
+    log('Сервисы:', services.map(s=>s.uuid.slice(4,8)).join(', '));
+    for(const p of PROTOCOLS){
+      try{
+        const s = await server.getPrimaryService(p.service);
+        d.ch = await s.getCharacteristic(p.char); d.proto = p; break;
+      }catch(e){}
+    }
+    if(!d.proto){
+      // dump characteristics so we can add support
+      for(const s of services){
+        const chs = await s.getCharacteristics().catch(()=>[]);
+        log(' ', s.uuid, '→', chs.map(c=>c.uuid.slice(4,8)+(c.properties.write||c.properties.writeWithoutResponse?'(w)':'')).join(' '));
+      }
+      log('⚠ Неизвестный протокол — пришлите этот журнал');
+    } else log('Протокол:', d.proto.name);
+    d.connected = true; render();
+    if(d.proto) await applyTo(d);
+  }catch(e){ log('Ошибка:', e.message); d.connected=false; render(); }
+}
+
+async function addDevice(){
+  try{
+    const device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices:true,
+      optionalServices: PROTOCOLS.map(p=>p.service)
+    });
+    if(devices.some(d=>d.device.id===device.id)) return;
+    const d={device,connected:false}; devices.push(d);
+    device.addEventListener('gattserverdisconnected',()=>{ d.connected=false; render(); log('Отключено:',device.name); });
+    render(); await connect(d);
+  }catch(e){ log(e.message); }
+}
+
+// serialize writes per device
+function send(d, bytes){
+  if(!d.connected||!d.ch||!bytes) return Promise.resolve();
+  d.q = (d.q||Promise.resolve()).then(()=>{
+    const data=new Uint8Array(bytes);
+    return (d.ch.properties.writeWithoutResponse ? d.ch.writeValueWithoutResponse(data) : d.ch.writeValue(data));
+  }).catch(e=>log('Запись:',e.message));
+  return d.q;
+}
+function scaled(){ // for protocols without brightness command
+  const k=state.bright/100; return [state.r*k|0,state.g*k|0,state.b*k|0];
+}
+function colorBytes(d){
+  return d.proto.bright ? d.proto.color(state.r,state.g,state.b) : d.proto.color(...scaled());
+}
+async function applyTo(d){
+  await send(d, d.proto.on());
+  await send(d, colorBytes(d));
+  if(d.proto.bright) await send(d, d.proto.bright(state.bright));
+}
+const all = fn => devices.forEach(d=>d.proto && send(d, fn(d)));
+
+// throttle so the slider doesn't flood BLE
+let pending=null;
+function throttle(fn){ if(pending) {pending=fn;return;} pending=fn; setTimeout(()=>{const f=pending;pending=null;f();},60); }
+
+// ---- colour wheel (hue = angle, saturation = radius) ----
+const wheel=$('#wheel'), knob=$('#knob'), ww=$('#ww');
+function drawWheel(){
+  const size=Math.round(ww.clientWidth*devicePixelRatio); wheel.width=wheel.height=size;
+  const ctx=wheel.getContext('2d'), img=ctx.createImageData(size,size), c=size/2;
+  for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+    const dx=x-c,dy=y-c,r=Math.hypot(dx,dy)/c; if(r>1)continue;
+    const [R,G,B]=hsv2rgb((Math.atan2(dy,dx)*180/Math.PI+360)%360,r,1), i=(y*size+x)*4;
+    img.data[i]=R;img.data[i+1]=G;img.data[i+2]=B;img.data[i+3]=255;
+  }
+  ctx.putImageData(img,0,0); placeKnob();
+}
+function hsv2rgb(h,s,v){const f=n=>{const k=(n+h/60)%6;return Math.round(255*(v-v*s*Math.max(0,Math.min(k,4-k,1))))};return[f(5),f(3),f(1)]}
+function rgb2hsv(r,g,b){r/=255;g/=255;b/=255;const M=Math.max(r,g,b),m=Math.min(r,g,b),d=M-m;let h=0;
+  if(d){h=M===r?((g-b)/d)%6:M===g?(b-r)/d+2:(r-g)/d+4;h*=60;if(h<0)h+=360}return[h,M?d/M:0,M]}
+const hexOf=()=>'#'+[state.r,state.g,state.b].map(x=>x.toString(16).padStart(2,'0')).join('').toUpperCase();
+function placeKnob(){
+  const [h,s]=rgb2hsv(state.r,state.g,state.b), R=ww.clientWidth/2, a=h*Math.PI/180;
+  knob.style.left=R+Math.cos(a)*s*R+'px'; knob.style.top=R+Math.sin(a)*s*R+'px';
+}
+function updateUI(){
+  const hex=hexOf(); document.documentElement.style.setProperty('--cur',hex);
+  knob.style.background=hex; $('#hex').textContent=hex;
+  const {r,g,b}=state;
+  [['r',r,`rgb(0,${g},${b})`,`rgb(255,${g},${b})`],['g',g,`rgb(${r},0,${b})`,`rgb(${r},255,${b})`],['b',b,`rgb(${r},${g},0)`,`rgb(${r},${g},255)`]]
+   .forEach(([k,v,a,z])=>{const el=$('#c'+k);el.value=v;el.style.background=`linear-gradient(90deg,${a},${z})`;$('#o'+k).textContent=v;});
+}
+function commit(fromWheel){
+  updateUI(); if(!fromWheel) placeKnob();
+  throttle(()=>all(colorBytes));
+  try{localStorage.setItem('car-led',JSON.stringify(state));}catch(e){}
+}
+function setColor(hex){
+  state.r=parseInt(hex.slice(1,3),16); state.g=parseInt(hex.slice(3,5),16); state.b=parseInt(hex.slice(5,7),16); commit();
+}
+function pick(e){
+  const rect=ww.getBoundingClientRect(), R=rect.width/2;
+  let dx=e.clientX-rect.left-R, dy=e.clientY-rect.top-R, d=Math.hypot(dx,dy);
+  if(d>R){dx*=R/d;dy*=R/d;d=R}
+  knob.style.left=R+dx+'px'; knob.style.top=R+dy+'px';
+  [state.r,state.g,state.b]=hsv2rgb((Math.atan2(dy,dx)*180/Math.PI+360)%360,d/R,1); commit(true);
+}
+ww.addEventListener('pointerdown',e=>{ww.setPointerCapture(e.pointerId);pick(e)});
+ww.addEventListener('pointermove',e=>{if(e.buttons)pick(e)});
+['r','g','b'].forEach(k=>$('#c'+k).addEventListener('input',e=>{state[k]=+e.target.value;commit()}));
+addEventListener('resize',drawWheel);
+$('#bright').addEventListener('input',e=>{
+  state.bright=+e.target.value; $('#bv').textContent=state.bright;
+  throttle(()=>all(d=>d.proto.bright ? d.proto.bright(state.bright) : colorBytes(d)));
+  try{localStorage.setItem('car-led',JSON.stringify(state));}catch(e){}
+});
+$('#on').onclick=()=>devices.forEach(d=>d.proto&&applyTo(d));
+$('#off').onclick=()=>all(d=>d.proto.off());
+$('#add').onclick=addDevice;
+
+['#ff0000','#ff6a00','#ffd000','#00ff40','#00e5ff','#0040ff','#8000ff','#ff00c8','#ff0040','#ffffff','#ffb070','#40ffb0']
+.forEach(c=>{const b=document.createElement('button');b.style.background=c;b.onclick=()=>setColor(c);$('#sw').append(b);});
+
+try{ const s=JSON.parse(localStorage.getItem('car-led')); if(s){Object.assign(state,s);
+  $('#bright').value=s.bright; $('#bv').textContent=s.bright;} }catch(e){}
+drawWheel(); updateUI();
+</script>
+</body>
+</html>
